@@ -209,13 +209,14 @@ class DetectionTransform:
 class COCODetection(Dataset):
     """Custom COCO detection dataset"""
     
-    def __init__(self, coco_root, subset='train2017', transform=None, num_classes=80):
+    def __init__(self, coco_root, subset='train2017', transform=None, num_classes=80, annotation_path=None):
         """
         Args:
             coco_root: Path to COCO dataset root
             subset: 'train2017', 'val2017', etc.
             transform: Transform to apply
             num_classes: Number of classes (80 for COCO)
+            annotation_path: Custom annotation directory (default: {coco_root}/annotations/)
         """
         self.coco_root = coco_root
         self.subset = subset
@@ -226,7 +227,10 @@ class COCODetection(Dataset):
         if not HAS_COCO:
             raise ImportError("pycocotools is required for COCO dataset. Install with: pip install pycocotools")
         
-        anno_file = os.path.join(coco_root, f'annotations/instances_{subset}.json')
+        if annotation_path:
+            anno_file = os.path.join(annotation_path, f'instances_{subset}.json')
+        else:
+            anno_file = os.path.join(coco_root, f'annotations/instances_{subset}.json')
         if not os.path.exists(anno_file):
             raise FileNotFoundError(f"COCO annotation file not found: {anno_file}")
         
@@ -460,7 +464,8 @@ def build_detection_dataloader(config: DataConfig, is_train=True,
         coco_root=config.data_path,
         subset=subset,
         transform=transform,
-        num_classes=80  # COCO has 80 classes
+        num_classes=80,  # COCO has 80 classes
+        annotation_path=getattr(config, 'annotation_path', None)
     )
     
     # Build sampler

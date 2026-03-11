@@ -9,6 +9,7 @@ class DataConfig:
     """Data configurations"""
     dataset: str = 'coco'  # 'coco' for object detection
     data_path: str = '/path/to/coco'
+    annotation_path: str = None  # Custom annotation dir (default: {data_path}/annotations/)
     img_size: int = 512  # Larger for detection
     batch_size: int = 16  # Smaller for detection
     num_workers: int = 8
