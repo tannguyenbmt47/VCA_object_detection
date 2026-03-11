@@ -262,7 +262,7 @@ def main():
                     f"Epoch {epoch+1}/{config.train.epochs} - "
                     f"Train Loss: {train_loss:.4f} - "
                     f"Val Loss: {val_loss:.4f} - "
-                    f"Val AP: {val_ap:.4f}"
+                    f"Val AP@50: {val_ap:.4f}"
                 )
                 
                 # Save checkpoint
@@ -490,12 +490,126 @@ def train_one_epoch_detection(train_loader, model, optimizer, scheduler,
     return loss_meter.avg, loss_meter.avg
 
 
+def _compute_iou(box1, box2):
+    """Compute IoU between two sets of boxes [N,4] and [M,4] in xyxy format"""
+    x1 = torch.max(box1[:, None, 0], box2[None, :, 0])
+    y1 = torch.max(box1[:, None, 1], box2[None, :, 1])
+    x2 = torch.min(box1[:, None, 2], box2[None, :, 2])
+    y2 = torch.min(box1[:, None, 3], box2[None, :, 3])
+    inter = (x2 - x1).clamp(min=0) * (y2 - y1).clamp(min=0)
+    area1 = (box1[:, 2] - box1[:, 0]) * (box1[:, 3] - box1[:, 1])
+    area2 = (box2[:, 2] - box2[:, 0]) * (box2[:, 3] - box2[:, 1])
+    union = area1[:, None] + area2[None, :] - inter
+    return inter / (union + 1e-7)
+
+
+def _compute_ap(all_pred_boxes, all_pred_scores, all_pred_labels,
+                all_gt_boxes, all_gt_labels, iou_threshold=0.5, score_threshold=0.05):
+    """Compute mean AP@iou_threshold across all images"""
+    # Gather per-class predictions and ground truths
+    num_images = len(all_pred_boxes)
+    
+    # Collect all unique classes from ground truth
+    all_classes = set()
+    for gt_labels in all_gt_labels:
+        all_classes.update(gt_labels.tolist())
+    
+    if len(all_classes) == 0:
+        return 0.0
+    
+    aps = []
+    for cls_id in all_classes:
+        # Collect all predictions and GTs for this class
+        pred_scores_cls = []
+        pred_boxes_cls = []
+        pred_img_ids = []
+        num_gt_total = 0
+        gt_matched = {}  # img_id -> bool array
+        
+        for img_id in range(num_images):
+            # GT for this class
+            gt_mask = all_gt_labels[img_id] == cls_id
+            n_gt = gt_mask.sum().item()
+            num_gt_total += n_gt
+            gt_matched[img_id] = torch.zeros(n_gt, dtype=torch.bool)
+            
+            # Predictions for this class above score threshold
+            pred_mask = (all_pred_labels[img_id] == cls_id) & (all_pred_scores[img_id] > score_threshold)
+            if pred_mask.any():
+                pred_scores_cls.append(all_pred_scores[img_id][pred_mask])
+                pred_boxes_cls.append(all_pred_boxes[img_id][pred_mask])
+                pred_img_ids.extend([img_id] * pred_mask.sum().item())
+        
+        if num_gt_total == 0:
+            continue
+        
+        if len(pred_scores_cls) == 0:
+            aps.append(0.0)
+            continue
+        
+        pred_scores_cls = torch.cat(pred_scores_cls)
+        pred_boxes_cls = torch.cat(pred_boxes_cls)
+        
+        # Sort by score descending
+        sorted_idx = pred_scores_cls.argsort(descending=True)
+        pred_scores_cls = pred_scores_cls[sorted_idx]
+        pred_boxes_cls = pred_boxes_cls[sorted_idx]
+        pred_img_ids = [pred_img_ids[i] for i in sorted_idx.tolist()]
+        
+        # Compute TP/FP
+        tp = torch.zeros(len(pred_scores_cls))
+        fp = torch.zeros(len(pred_scores_cls))
+        
+        for det_idx in range(len(pred_scores_cls)):
+            img_id = pred_img_ids[det_idx]
+            gt_mask = all_gt_labels[img_id] == cls_id
+            gt_boxes = all_gt_boxes[img_id][gt_mask]
+            
+            if len(gt_boxes) == 0:
+                fp[det_idx] = 1
+                continue
+            
+            iou = _compute_iou(pred_boxes_cls[det_idx:det_idx+1], gt_boxes)  # [1, M]
+            max_iou, max_idx = iou[0].max(dim=0)
+            
+            if max_iou >= iou_threshold and not gt_matched[img_id][max_idx]:
+                tp[det_idx] = 1
+                gt_matched[img_id][max_idx] = True
+            else:
+                fp[det_idx] = 1
+        
+        # Compute precision-recall
+        tp_cumsum = tp.cumsum(dim=0)
+        fp_cumsum = fp.cumsum(dim=0)
+        precision = tp_cumsum / (tp_cumsum + fp_cumsum + 1e-7)
+        recall = tp_cumsum / (num_gt_total + 1e-7)
+        
+        # AP using all-point interpolation
+        recall = torch.cat([torch.tensor([0.0]), recall, torch.tensor([1.0])])
+        precision = torch.cat([torch.tensor([0.0]), precision, torch.tensor([0.0])])
+        
+        # Make precision monotonically decreasing
+        for i in range(len(precision) - 2, -1, -1):
+            precision[i] = max(precision[i], precision[i + 1])
+        
+        # Find points where recall changes
+        change_points = torch.where(recall[1:] != recall[:-1])[0]
+        ap = ((recall[change_points + 1] - recall[change_points]) * precision[change_points + 1]).sum().item()
+        aps.append(ap)
+    
+    return sum(aps) / len(aps) if aps else 0.0
+
 
 def validate_detection(val_loader, model, device, rank):
     """Validation for object detection"""
     model.eval()
     
     loss_meter = AverageMeter('Loss')
+    all_pred_boxes = []
+    all_pred_scores = []
+    all_pred_labels = []
+    all_gt_boxes = []
+    all_gt_labels = []
     
     with torch.no_grad():
         for images, targets_list in val_loader:
@@ -518,12 +632,57 @@ def validate_detection(val_loader, model, device, rank):
             )
             
             loss_meter.update(loss.item(), images.size(0))
+            
+            # Collect predictions and ground truths for AP computation
+            B = class_logits.shape[0]
+            for i in range(B):
+                # Predicted scores and labels (exclude background class = last)
+                scores = torch.softmax(class_logits[i], dim=-1)[:, :-1]  # [num_queries, num_classes]
+                max_scores, pred_cls = scores.max(dim=-1)  # [num_queries]
+                
+                # Predicted boxes: sigmoid + cxcywh -> xyxy
+                pb = bbox_pred[i].sigmoid()
+                pred_xyxy = torch.stack([
+                    pb[:, 0] - pb[:, 2] / 2,
+                    pb[:, 1] - pb[:, 3] / 2,
+                    pb[:, 0] + pb[:, 2] / 2,
+                    pb[:, 1] + pb[:, 3] / 2,
+                ], dim=-1).clamp(0, 1)
+                
+                all_pred_boxes.append(pred_xyxy.cpu())
+                all_pred_scores.append(max_scores.cpu())
+                all_pred_labels.append(pred_cls.cpu())
+                
+                # Ground truth boxes (already scaled by transform)
+                gt = targets_list[i]
+                gt_boxes = gt.get('boxes', torch.zeros(0, 4))
+                gt_labels = gt.get('labels', torch.zeros(0, dtype=torch.long))
+                if isinstance(gt_boxes, torch.Tensor):
+                    gt_boxes = gt_boxes.cpu()
+                    gt_labels = gt_labels.cpu()
+                else:
+                    gt_boxes = torch.as_tensor(gt_boxes, dtype=torch.float32)
+                    gt_labels = torch.as_tensor(gt_labels, dtype=torch.int64)
+                
+                # Normalize gt_boxes to [0,1] same as pred
+                img_size = gt.get('image_size', None)
+                pad = gt.get('pad', None)
+                if img_size is not None and pad is not None:
+                    total_h = img_size[0] + pad[0]
+                    total_w = img_size[1] + pad[1]
+                    gt_boxes = gt_boxes / torch.tensor([total_w, total_h, total_w, total_h], dtype=torch.float32)
+                    gt_boxes = gt_boxes.clamp(0, 1)
+                
+                all_gt_boxes.append(gt_boxes)
+                all_gt_labels.append(gt_labels)
     
-    # Simple metrics (full COCO evaluation requires pycocotools)
+    # Compute AP@50
+    ap50 = _compute_ap(all_pred_boxes, all_pred_scores, all_pred_labels,
+                       all_gt_boxes, all_gt_labels, iou_threshold=0.5)
+    
     metrics = {
-        'ap': 0.0,
-        'ar': 0.0,
-        'ap50': 0.0,
+        'ap': ap50,
+        'ap50': ap50,
         'val_loss': loss_meter.avg
     }
     
