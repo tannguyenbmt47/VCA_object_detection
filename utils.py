@@ -56,7 +56,7 @@ def save_checkpoint(output_dir, epoch, model, optimizer, lr_scheduler,
         'epoch': epoch,
         'model': model.state_dict() if hasattr(model, 'module') else model.state_dict(),
         'optimizer': optimizer.state_dict(),
-        'scheduler': lr_scheduler.state_dict() if lr_scheduler else None,
+        'scheduler': lr_scheduler.state_dict() if lr_scheduler and hasattr(lr_scheduler, 'state_dict') else None,
         'best_acc': best_acc,
     }
     
