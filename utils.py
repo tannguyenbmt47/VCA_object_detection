@@ -206,7 +206,7 @@ def detection_loss(class_logits, bbox_pred, targets, device='cpu',
         # Bbox loss (L1 + GIoU)
         if n_targets > 0:
             pred_box = bbox[:n_targets]  # [n_targets, 4]
-            pred_box = pred_box.sigmoid()  # Constrain to [0, 1]
+            pred_box = pred_box.sigmoid()  # Interpret as (cx, cy, w, h) in [0, 1]
             target_box = target_boxes[:n_targets]  # [n_targets, 4]
             
             # Normalize targets to [0, 1] using the padded image size (img_size x img_size)
@@ -221,12 +221,28 @@ def detection_loss(class_logits, bbox_pred, targets, device='cpu',
             target_box = target_box / torch.tensor([total_w, total_h, total_w, total_h], dtype=torch.float32).to(device)
             target_box = target_box.clamp(0, 1)
             
-            # L1 loss
-            loss_l1 = torch.nn.functional.l1_loss(pred_box, target_box)
+            # Convert target from xyxy to cxcywh for L1 loss
+            target_cxcywh = torch.stack([
+                (target_box[:, 0] + target_box[:, 2]) / 2,  # cx
+                (target_box[:, 1] + target_box[:, 3]) / 2,  # cy
+                (target_box[:, 2] - target_box[:, 0]).clamp(min=0),  # w
+                (target_box[:, 3] - target_box[:, 1]).clamp(min=0),  # h
+            ], dim=-1)
+            
+            # L1 loss in cxcywh space
+            loss_l1 = torch.nn.functional.l1_loss(pred_box, target_cxcywh)
             loss_bbox_total += loss_l1
             
+            # Convert pred from cxcywh to xyxy for GIoU loss
+            pred_xyxy = torch.stack([
+                pred_box[:, 0] - pred_box[:, 2] / 2,  # x1
+                pred_box[:, 1] - pred_box[:, 3] / 2,  # y1
+                pred_box[:, 0] + pred_box[:, 2] / 2,  # x2
+                pred_box[:, 1] + pred_box[:, 3] / 2,  # y2
+            ], dim=-1).clamp(0, 1)
+            
             # GIoU loss
-            loss_giou = compute_giou_loss(pred_box, target_box)
+            loss_giou = compute_giou_loss(pred_xyxy, target_box)
             loss_giou_total += loss_giou
             
             num_boxes += n_targets
