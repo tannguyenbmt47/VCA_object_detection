@@ -419,8 +419,12 @@ def train_one_epoch_detection(train_loader, model, optimizer, scheduler,
         # Move targets to device
         for targets in targets_list:
             if 'boxes' in targets:
+                if not isinstance(targets['boxes'], torch.Tensor):
+                    targets['boxes'] = torch.as_tensor(targets['boxes'], dtype=torch.float32)
                 targets['boxes'] = targets['boxes'].to(device)
             if 'labels' in targets:
+                if not isinstance(targets['labels'], torch.Tensor):
+                    targets['labels'] = torch.as_tensor(targets['labels'], dtype=torch.int64)
                 targets['labels'] = targets['labels'].to(device)
             if 'orig_size' in targets and isinstance(targets['orig_size'], tuple):
                 targets['orig_size'] = (targets['orig_size'][0], targets['orig_size'][1])
@@ -494,8 +498,12 @@ def validate_detection(val_loader, model, device, rank):
             # Move targets to device
             for targets in targets_list:
                 if 'boxes' in targets:
+                    if not isinstance(targets['boxes'], torch.Tensor):
+                        targets['boxes'] = torch.as_tensor(targets['boxes'], dtype=torch.float32)
                     targets['boxes'] = targets['boxes'].to(device)
                 if 'labels' in targets:
+                    if not isinstance(targets['labels'], torch.Tensor):
+                        targets['labels'] = torch.as_tensor(targets['labels'], dtype=torch.int64)
                     targets['labels'] = targets['labels'].to(device)
             
             class_logits, bbox_pred = model(images)
