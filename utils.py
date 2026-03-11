@@ -206,12 +206,20 @@ def detection_loss(class_logits, bbox_pred, targets, device='cpu',
         # Bbox loss (L1 + GIoU)
         if n_targets > 0:
             pred_box = bbox[:n_targets]  # [n_targets, 4]
+            pred_box = pred_box.sigmoid()  # Constrain to [0, 1]
             target_box = target_boxes[:n_targets]  # [n_targets, 4]
             
-            # Normalize targets to [0, 1]
-            img_h, img_w = target.get('orig_size', (1, 1))
-            target_box = target_box / torch.tensor([img_w, img_h, img_w, img_h]).to(device)
-            target_box.clamp_(0, 1)
+            # Normalize targets to [0, 1] using the padded image size (img_size x img_size)
+            img_size = target.get('image_size', None)
+            pad = target.get('pad', None)
+            if img_size is not None and pad is not None:
+                # Total size = image_size + pad = img_size (the fixed output size)
+                total_h = img_size[0] + pad[0]
+                total_w = img_size[1] + pad[1]
+            else:
+                total_h, total_w = target.get('orig_size', (1, 1))
+            target_box = target_box / torch.tensor([total_w, total_h, total_w, total_h], dtype=torch.float32).to(device)
+            target_box = target_box.clamp(0, 1)
             
             # L1 loss
             loss_l1 = torch.nn.functional.l1_loss(pred_box, target_box)
