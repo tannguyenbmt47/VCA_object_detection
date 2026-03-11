@@ -107,7 +107,7 @@ def build_test_transform(img_size=224):
 def build_detection_train_transform(img_size=512, min_size=480, max_size=1333):
     """Build training augmentation for detection"""
     return DetectionTransform(
-        resize_size=(min_size, max_size),
+        img_size=img_size,
         train=True,
         normalize_mean=[0.485, 0.456, 0.406],
         normalize_std=[0.229, 0.224, 0.225]
@@ -117,7 +117,7 @@ def build_detection_train_transform(img_size=512, min_size=480, max_size=1333):
 def build_detection_eval_transform(img_size=512, min_size=480, max_size=1333):
     """Build eval augmentation for detection"""
     return DetectionTransform(
-        resize_size=(min_size, max_size),
+        img_size=img_size,
         train=False,
         normalize_mean=[0.485, 0.456, 0.406],
         normalize_std=[0.229, 0.224, 0.225]
@@ -131,9 +131,9 @@ def build_detection_eval_transform(img_size=512, min_size=480, max_size=1333):
 class DetectionTransform:
     """Transform for object detection with bounding boxes"""
     
-    def __init__(self, resize_size=(480, 1333), train=True, 
+    def __init__(self, img_size=512, train=True, 
                  normalize_mean=None, normalize_std=None):
-        self.min_size, self.max_size = resize_size
+        self.img_size = img_size
         self.train = train
         self.normalize_mean = normalize_mean or [0.485, 0.456, 0.406]
         self.normalize_std = normalize_std or [0.229, 0.224, 0.225]
@@ -141,11 +141,11 @@ class DetectionTransform:
     def __call__(self, image, targets=None):
         """
         Args:
-            image: PIL Image
+            image: numpy array [H, W, C]
             targets: dict with 'boxes' [N, 4] and 'labels' [N]
         
         Returns:
-            image: [C, H, W] normalized tensor
+            image: [C, img_size, img_size] normalized tensor
             targets: dict with transformed boxes and labels
         """
         if targets is None:
@@ -163,8 +163,8 @@ class DetectionTransform:
                     boxes[:, [0, 2]] = w - boxes[:, [2, 0]]
                     targets['boxes'] = boxes
         
-        # Resize
-        scale = min(self.max_size / max(h, w), self.min_size / min(h, w))
+        # Resize to fit within img_size while preserving aspect ratio
+        scale = self.img_size / max(h, w)
         new_h, new_w = int(h * scale), int(w * scale)
         # Convert numpy HWC -> CHW tensor
         image_tensor = torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1)))
@@ -177,10 +177,9 @@ class DetectionTransform:
         if 'boxes' in targets:
             targets['boxes'] = targets['boxes'] * scale
         
-        # Pad to square
-        max_dim = max(new_h, new_w)
-        pad_h = max_dim - new_h
-        pad_w = max_dim - new_w
+        # Pad to fixed img_size x img_size
+        pad_h = self.img_size - new_h
+        pad_w = self.img_size - new_w
         image = torch.nn.functional.pad(
             image.unsqueeze(0),
             (0, pad_w, 0, pad_h),
@@ -201,7 +200,7 @@ class DetectionTransform:
         return image, targets
     
     def __repr__(self):
-        return f"DetectionTransform(min_size={self.min_size}, max_size={self.max_size})"
+        return f"DetectionTransform(img_size={self.img_size})"
 
 
 # ============================================================================
