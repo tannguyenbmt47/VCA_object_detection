@@ -166,10 +166,12 @@ class DetectionTransform:
         # Resize
         scale = min(self.max_size / max(h, w), self.min_size / min(h, w))
         new_h, new_w = int(h * scale), int(w * scale)
+        # Convert numpy HWC -> CHW tensor
+        image_tensor = torch.from_numpy(np.ascontiguousarray(image.transpose(2, 0, 1)))
         image = transforms.functional.resize(
-            transforms.functional.pil_to_tensor(image),
+            image_tensor,
             (new_h, new_w)
-        ) / 255.0  # Normalize to [0, 1]
+        ).float() / 255.0  # Normalize to [0, 1]
         
         # Update boxes for resize
         if 'boxes' in targets:
