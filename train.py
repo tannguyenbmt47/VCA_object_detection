@@ -35,6 +35,8 @@ def parse_args():
     parser.add_argument('--annotation-path', type=str, default='', help='Path to annotation directory (default: {data-path}/annotations/)')
     parser.add_argument('--image-path', type=str, default='', help='Path to train image directory containing train2017/ (default: {data-path}/)')
     parser.add_argument('--val-image-path', type=str, default='', help='Path to val image directory containing val2017/ (default: same as --image-path)')
+    parser.add_argument('--max-train-samples', type=int, default=0, help='Max number of training images (0 = use all)')
+    parser.add_argument('--max-val-samples', type=int, default=0, help='Max number of validation images (0 = use all)')
     parser.add_argument('--output-dir', type=str, default='output', help='Output directory')
     parser.add_argument('--resume', type=str, default='', help='Resume from checkpoint')
     parser.add_argument('--pretrained', type=str, default='', help='Pretrained weights')
@@ -114,6 +116,8 @@ def main():
             annotation_path=args.annotation_path if args.annotation_path else None,
             image_path=args.image_path if args.image_path else None,
             val_image_path=args.val_image_path if args.val_image_path else None,
+            max_train_samples=args.max_train_samples,
+            max_val_samples=args.max_val_samples,
             batch_size=args.batch_size,
             img_size=args.img_size,
             num_workers=args.num_workers,

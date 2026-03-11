@@ -210,7 +210,7 @@ class DetectionTransform:
 class COCODetection(Dataset):
     """Custom COCO detection dataset"""
     
-    def __init__(self, coco_root, subset='train2017', transform=None, num_classes=80, annotation_path=None, image_path=None):
+    def __init__(self, coco_root, subset='train2017', transform=None, num_classes=80, annotation_path=None, image_path=None, max_samples=0):
         """
         Args:
             coco_root: Path to COCO dataset root
@@ -219,6 +219,7 @@ class COCODetection(Dataset):
             num_classes: Number of classes (80 for COCO)
             annotation_path: Custom annotation directory (default: {coco_root}/annotations/)
             image_path: Custom image directory containing train2017/val2017 (default: {coco_root}/)
+            max_samples: Max number of images to use (0 = use all)
         """
         self.coco_root = coco_root
         self.image_root = image_path if image_path else coco_root
@@ -246,6 +247,10 @@ class COCODetection(Dataset):
         
         # Filter images with at least one annotation
         self.ids = [id for id in self.ids if len(self.coco.imgToAnns[id]) > 0]
+        
+        # Limit number of samples if specified
+        if max_samples > 0 and max_samples < len(self.ids):
+            self.ids = self.ids[:max_samples]
         
         print(f"COCODetection: Loaded {len(self.ids)} images from {subset}")
     
@@ -471,13 +476,20 @@ def build_detection_dataloader(config: DataConfig, is_train=True,
         img_path = getattr(config, 'val_image_path', None) or getattr(config, 'image_path', None)
     
     # Build dataset
+    max_samples = 0
+    if is_train:
+        max_samples = getattr(config, 'max_train_samples', 0)
+    else:
+        max_samples = getattr(config, 'max_val_samples', 0)
+    
     dataset = COCODetection(
         coco_root=config.data_path,
         subset=subset,
         transform=transform,
         num_classes=80,  # COCO has 80 classes
         annotation_path=ann_path,
-        image_path=img_path
+        image_path=img_path,
+        max_samples=max_samples
     )
     
     # Build sampler
