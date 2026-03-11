@@ -209,7 +209,7 @@ class DetectionTransform:
 class COCODetection(Dataset):
     """Custom COCO detection dataset"""
     
-    def __init__(self, coco_root, subset='train2017', transform=None, num_classes=80, annotation_path=None):
+    def __init__(self, coco_root, subset='train2017', transform=None, num_classes=80, annotation_path=None, image_path=None):
         """
         Args:
             coco_root: Path to COCO dataset root
@@ -217,8 +217,10 @@ class COCODetection(Dataset):
             transform: Transform to apply
             num_classes: Number of classes (80 for COCO)
             annotation_path: Custom annotation directory (default: {coco_root}/annotations/)
+            image_path: Custom image directory containing train2017/val2017 (default: {coco_root}/)
         """
         self.coco_root = coco_root
+        self.image_root = image_path if image_path else coco_root
         self.subset = subset
         self.transform = transform
         self.num_classes = num_classes
@@ -250,7 +252,7 @@ class COCODetection(Dataset):
         img_info = self.coco.loadImgs(img_id)[0]
         
         # Load image
-        img_path = os.path.join(self.coco_root, self.subset, img_info['file_name'])
+        img_path = os.path.join(self.image_root, self.subset, img_info['file_name'])
         image = self._load_image(img_path)
         h, w = image.shape[:2]
         
@@ -465,7 +467,8 @@ def build_detection_dataloader(config: DataConfig, is_train=True,
         subset=subset,
         transform=transform,
         num_classes=80,  # COCO has 80 classes
-        annotation_path=getattr(config, 'annotation_path', None)
+        annotation_path=getattr(config, 'annotation_path', None),
+        image_path=getattr(config, 'image_path', None)
     )
     
     # Build sampler
