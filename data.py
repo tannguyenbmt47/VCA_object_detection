@@ -453,6 +453,8 @@ def build_detection_dataloader(config: DataConfig, is_train=True,
             max_size=config.max_size if hasattr(config, 'max_size') else 1333
         )
         subset = 'train2017'
+        ann_path = getattr(config, 'annotation_path', None)
+        img_path = getattr(config, 'image_path', None)
     else:
         transform = build_detection_eval_transform(
             img_size=config.img_size,
@@ -460,6 +462,8 @@ def build_detection_dataloader(config: DataConfig, is_train=True,
             max_size=config.max_size if hasattr(config, 'max_size') else 1333
         )
         subset = 'val2017'
+        ann_path = getattr(config, 'annotation_path', None)
+        img_path = getattr(config, 'val_image_path', None) or getattr(config, 'image_path', None)
     
     # Build dataset
     dataset = COCODetection(
@@ -467,8 +471,8 @@ def build_detection_dataloader(config: DataConfig, is_train=True,
         subset=subset,
         transform=transform,
         num_classes=80,  # COCO has 80 classes
-        annotation_path=getattr(config, 'annotation_path', None),
-        image_path=getattr(config, 'image_path', None)
+        annotation_path=ann_path,
+        image_path=img_path
     )
     
     # Build sampler

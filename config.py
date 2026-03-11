@@ -10,7 +10,8 @@ class DataConfig:
     dataset: str = 'coco'  # 'coco' for object detection
     data_path: str = '/path/to/coco'
     annotation_path: str = None  # Custom annotation dir (default: {data_path}/annotations/)
-    image_path: str = None  # Custom image dir containing train2017/val2017 (default: {data_path}/)
+    image_path: str = None  # Custom image dir containing train2017/ (default: {data_path}/)
+    val_image_path: str = None  # Custom val image dir containing val2017/ (default: same as image_path)
     img_size: int = 512  # Larger for detection
     batch_size: int = 16  # Smaller for detection
     num_workers: int = 8
