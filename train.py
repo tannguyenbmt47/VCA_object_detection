@@ -251,11 +251,13 @@ def main():
         if args.task == 'detection':
             val_metrics = validate_detection(val_loader, model, args.device, args.rank)
             val_ap = val_metrics.get('ap', 0.0)
+            val_loss = val_metrics.get('val_loss', 0.0)
             
             if args.rank == 0:
                 logger.info(
                     f"Epoch {epoch+1}/{config.train.epochs} - "
                     f"Train Loss: {train_loss:.4f} - "
+                    f"Val Loss: {val_loss:.4f} - "
                     f"Val AP: {val_ap:.4f}"
                 )
                 
