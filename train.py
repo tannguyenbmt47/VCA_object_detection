@@ -504,7 +504,7 @@ def _compute_iou(box1, box2):
 
 
 def _compute_ap(all_pred_boxes, all_pred_scores, all_pred_labels,
-                all_gt_boxes, all_gt_labels, iou_threshold=0.5, score_threshold=0.05):
+                all_gt_boxes, all_gt_labels, iou_threshold=0.5, score_threshold=0.001):
     """Compute mean AP@iou_threshold across all images"""
     # Gather per-class predictions and ground truths
     num_images = len(all_pred_boxes)
