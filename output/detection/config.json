@@ -1,0 +1,72 @@
+{
+    "data": {
+        "dataset": "coco",
+        "data_path": "/media/tan/F/RESEARCH/data/coco",
+        "img_size": 512,
+        "batch_size": 16,
+        "num_workers": 8,
+        "pin_memory": true,
+        "interpolation": "bicubic",
+        "min_size": 480,
+        "max_size": 1333
+    },
+    "model": {
+        "model_type": "vca_deit_tiny",
+        "task": "detection",
+        "patch_size": 16,
+        "embed_dim": 192,
+        "depth": 12,
+        "num_heads": 3,
+        "mlp_ratio": 4.0,
+        "vct_num": [
+            49,
+            49,
+            49,
+            49
+        ],
+        "vct_layer": 12,
+        "drop_rate": 0.0,
+        "attn_drop_rate": 0.0,
+        "drop_path_rate": 0.1,
+        "label_smoothing": 0.1,
+        "num_classes": 80,
+        "num_queries": 100,
+        "num_decoder_layers": 6
+    },
+    "aug": {
+        "color_jitter": 0.4,
+        "auto_augment": "rand-m9-mstd0.5-inc1",
+        "reprob": 0.25,
+        "remode": "pixel",
+        "recount": 1,
+        "mixup": 0.8,
+        "cutmix": 1.0,
+        "cutmix_minmax": null,
+        "mixup_prob": 1.0,
+        "mixup_switch_prob": 0.5,
+        "mixup_mode": "batch"
+    },
+    "train": {
+        "epochs": 100,
+        "warmup_epochs": 20,
+        "start_epoch": 0,
+        "optimizer": "adamw",
+        "base_lr": 0.0001,
+        "warmup_lr": 5e-07,
+        "min_lr": 5e-06,
+        "weight_decay": 0.05,
+        "eps": 1e-08,
+        "betas": [
+            0.9,
+            0.999
+        ],
+        "momentum": 0.9,
+        "lr_scheduler": "cosine",
+        "clip_grad": 5.0,
+        "save_freq": 1,
+        "print_freq": 100,
+        "output_dir": "output/detection",
+        "distributed": false,
+        "seed": 0
+    }
+}
