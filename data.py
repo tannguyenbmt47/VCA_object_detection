@@ -240,6 +240,10 @@ class COCODetection(Dataset):
         self.coco = COCO(anno_file)
         self.ids = list(self.coco.imgToAnns.keys())
         
+        # Build contiguous category id mapping (COCO has 80 classes but IDs go up to 90)
+        cat_ids = sorted(self.coco.getCatIds())
+        self.cat_id_to_label = {cat_id: i for i, cat_id in enumerate(cat_ids)}
+        
         # Filter images with at least one annotation
         self.ids = [id for id in self.ids if len(self.coco.imgToAnns[id]) > 0]
         
@@ -277,7 +281,7 @@ class COCODetection(Dataset):
             
             if x2 > x1 and y2 > y1:
                 boxes.append([x1, y1, x2, y2])
-                labels.append(ann['category_id'] - 1)  # COCO categories are 1-indexed
+                labels.append(self.cat_id_to_label[ann['category_id']])
         
         if len(boxes) == 0:
             # Return dummy target if no valid boxes
