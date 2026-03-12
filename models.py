@@ -531,9 +531,9 @@ def create_vca_deit_base(img_size=224, drop_path_rate=0.1, agent_num=None, **kwa
 # ============================================================================
 
 class DetectionHead(nn.Module):
-    """Detection head for object detection"""
+    """Detection head for object detection with cross-attention"""
     
-    def __init__(self, embed_dim, num_classes=80, num_queries=100):
+    def __init__(self, embed_dim, num_classes=80, num_queries=100, num_decoder_layers=3):
         super().__init__()
         self.num_classes = num_classes
         self.num_queries = num_queries
@@ -541,43 +541,53 @@ class DetectionHead(nn.Module):
         # Learnable query embeddings
         self.query_embed = nn.Embedding(num_queries, embed_dim)
         
+        # Cross-attention decoder layers
+        self.decoder_layers = nn.ModuleList([
+            nn.TransformerDecoderLayer(
+                d_model=embed_dim, nhead=max(embed_dim // 64, 1),
+                dim_feedforward=embed_dim * 4, dropout=0.1,
+                activation='gelu', batch_first=True, norm_first=True
+            )
+            for _ in range(num_decoder_layers)
+        ])
+        self.decoder_norm = nn.LayerNorm(embed_dim)
+        
         # Class prediction
         self.class_head = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 2),
+            nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
-            nn.Linear(embed_dim * 2, embed_dim),
             nn.Linear(embed_dim, num_classes + 1)  # +1 for background
         )
         
-        # Bounding box prediction
+        # Bounding box prediction (outputs raw values, sigmoid applied in loss)
         self.bbox_head = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 2),
+            nn.Linear(embed_dim, embed_dim),
             nn.GELU(),
-            nn.Linear(embed_dim * 2, embed_dim),
-            nn.Linear(embed_dim, 4)  # 4 for (x, y, w, h)
+            nn.Linear(embed_dim, 4)  # 4 for (cx, cy, w, h)
         )
     
     def forward(self, x):
         """
         Args:
-            x: [B, N, C] from backbone
+            x: [B, N, C] from backbone (includes cls token at index 0)
         
         Returns:
             class_logits: [B, num_queries, num_classes+1]
-            bbox_pred: [B, num_queries, 4]
+            bbox_pred: [B, num_queries, 4] (raw, no sigmoid)
         """
         B = x.shape[0]
+        memory = x  # backbone features as memory for cross-attention
         
         # Get query embeddings
         queries = self.query_embed.weight.unsqueeze(0).expand(B, -1, -1)  # [B, num_queries, C]
         
-        # Simple approach: use mean of backbone features + queries
-        # More advanced: use cross-attention
-        class_logits = self.class_head(queries)  # [B, num_queries, num_classes+1]
-        bbox_pred = self.bbox_head(queries)      # [B, num_queries, 4]
+        # Cross-attention: queries attend to image features
+        for layer in self.decoder_layers:
+            queries = layer(queries, memory)
+        queries = self.decoder_norm(queries)
         
-        # Sigmoid for bbox (normalized coordinates)
-        bbox_pred = torch.sigmoid(bbox_pred)
+        class_logits = self.class_head(queries)  # [B, num_queries, num_classes+1]
+        bbox_pred = self.bbox_head(queries)       # [B, num_queries, 4]
         
         return class_logits, bbox_pred
 

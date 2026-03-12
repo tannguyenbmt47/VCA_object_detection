@@ -154,16 +154,14 @@ def accuracy(output, target, topk=(1,)):
 def detection_loss(class_logits, bbox_pred, targets, device='cpu', 
                   num_classes=80, alpha=0.25, gamma=2.0):
     """
-    Compute detection loss combining classification and bbox regression
+    Compute detection loss with Hungarian matching
     
     Args:
         class_logits: [B, num_queries, num_classes+1]
-        bbox_pred: [B, num_queries, 4]
+        bbox_pred: [B, num_queries, 4] (raw, before sigmoid)
         targets: list of dicts with 'boxes' and 'labels'
         device: device to compute on
         num_classes: number of classes
-        alpha: focal loss alpha
-        gamma: focal loss gamma
     
     Returns:
         loss: scalar tensor
@@ -171,81 +169,101 @@ def detection_loss(class_logits, bbox_pred, targets, device='cpu',
     """
     B, num_queries = class_logits.shape[:2]
     
+    # Apply sigmoid to get predicted boxes in [0, 1] as cxcywh
+    pred_boxes_all = bbox_pred.sigmoid()  # [B, num_queries, 4]
+    
     # Initialize loss accumulators
-    total_loss = 0
-    loss_cls_total = 0
-    loss_bbox_total = 0
-    loss_giou_total = 0
+    loss_cls_total = torch.tensor(0.0, device=device)
+    loss_bbox_total = torch.tensor(0.0, device=device)
+    loss_giou_total = torch.tensor(0.0, device=device)
     num_boxes = 0
     
-    for i, (cls_logit, bbox, target) in enumerate(zip(class_logits, bbox_pred, targets)):
-        target_boxes = target.get('boxes', torch.tensor([]).to(device))
-        target_labels = target.get('labels', torch.tensor([]).to(device))
+    for i in range(B):
+        cls_logit = class_logits[i]  # [num_queries, num_classes+1]
+        pred_box = pred_boxes_all[i]  # [num_queries, 4] cxcywh in [0, 1]
+        target = targets[i]
         
-        if len(target_labels) == 0:
-            # No targets, apply background class loss
+        target_boxes = target.get('boxes', torch.tensor([], device=device).reshape(0, 4))
+        target_labels = target.get('labels', torch.tensor([], device=device, dtype=torch.long))
+        if not isinstance(target_boxes, torch.Tensor):
+            target_boxes = torch.as_tensor(target_boxes, dtype=torch.float32, device=device)
+        if not isinstance(target_labels, torch.Tensor):
+            target_labels = torch.as_tensor(target_labels, dtype=torch.long, device=device)
+        
+        n_targets = len(target_labels)
+        
+        if n_targets == 0:
+            # No targets — all queries should predict background
             cls_loss = torch.nn.functional.cross_entropy(
                 cls_logit, 
-                torch.full((num_queries,), num_classes, dtype=torch.long).to(device)
+                torch.full((num_queries,), num_classes, dtype=torch.long, device=device)
             )
-            loss_cls_total += cls_loss
+            loss_cls_total = loss_cls_total + cls_loss
             continue
         
-        # Simple assignment: use first N queries for N targets
-        n_targets = len(target_labels)
-        n_queries_to_use = min(n_targets, num_queries)
+        # Normalize target boxes to [0, 1] and convert to cxcywh
+        img_size = target.get('image_size', None)
+        pad = target.get('pad', None)
+        if img_size is not None and pad is not None:
+            total_h = img_size[0] + pad[0]
+            total_w = img_size[1] + pad[1]
+        else:
+            total_h, total_w = target.get('orig_size', (1, 1))
         
-        # Classification loss (focal loss)
-        targets_cls = torch.full((num_queries,), num_classes, dtype=torch.long).to(device)
-        targets_cls[:n_targets] = target_labels[:n_targets]
+        tgt_boxes_norm = target_boxes / torch.tensor([total_w, total_h, total_w, total_h], dtype=torch.float32, device=device)
+        tgt_boxes_norm = tgt_boxes_norm.clamp(0, 1)
         
-        # Cross entropy loss
+        # Convert target from xyxy to cxcywh
+        tgt_cxcywh = torch.stack([
+            (tgt_boxes_norm[:, 0] + tgt_boxes_norm[:, 2]) / 2,
+            (tgt_boxes_norm[:, 1] + tgt_boxes_norm[:, 3]) / 2,
+            (tgt_boxes_norm[:, 2] - tgt_boxes_norm[:, 0]).clamp(min=0),
+            (tgt_boxes_norm[:, 3] - tgt_boxes_norm[:, 1]).clamp(min=0),
+        ], dim=-1)  # [n_targets, 4]
+        
+        # === Hungarian Matching ===
+        with torch.no_grad():
+            # Cost: classification
+            cls_probs = cls_logit.softmax(dim=-1)  # [num_queries, num_classes+1]
+            cost_cls = -cls_probs[:, target_labels]  # [num_queries, n_targets]
+            
+            # Cost: L1 bbox
+            cost_bbox = torch.cdist(pred_box, tgt_cxcywh, p=1)  # [num_queries, n_targets]
+            
+            # Cost: GIoU
+            pred_xyxy = _cxcywh_to_xyxy(pred_box)  # [num_queries, 4]
+            tgt_xyxy = tgt_boxes_norm  # already xyxy [n_targets, 4]
+            cost_giou = -_compute_pairwise_giou(pred_xyxy, tgt_xyxy)  # [num_queries, n_targets]
+            
+            # Total cost
+            C = 1.0 * cost_cls + 5.0 * cost_bbox + 2.0 * cost_giou
+            
+            # Greedy matching (approximate Hungarian for efficiency)
+            indices = _greedy_match(C)
+        
+        query_idx, tgt_idx = indices
+        
+        # Classification loss
+        targets_cls = torch.full((num_queries,), num_classes, dtype=torch.long, device=device)
+        targets_cls[query_idx] = target_labels[tgt_idx]
         cls_loss = torch.nn.functional.cross_entropy(cls_logit, targets_cls)
-        loss_cls_total += cls_loss
+        loss_cls_total = loss_cls_total + cls_loss
         
-        # Bbox loss (L1 + GIoU)
-        if n_targets > 0:
-            pred_box = bbox[:n_targets]  # [n_targets, 4]
-            pred_box = pred_box.sigmoid()  # Interpret as (cx, cy, w, h) in [0, 1]
-            target_box = target_boxes[:n_targets]  # [n_targets, 4]
-            
-            # Normalize targets to [0, 1] using the padded image size (img_size x img_size)
-            img_size = target.get('image_size', None)
-            pad = target.get('pad', None)
-            if img_size is not None and pad is not None:
-                # Total size = image_size + pad = img_size (the fixed output size)
-                total_h = img_size[0] + pad[0]
-                total_w = img_size[1] + pad[1]
-            else:
-                total_h, total_w = target.get('orig_size', (1, 1))
-            target_box = target_box / torch.tensor([total_w, total_h, total_w, total_h], dtype=torch.float32).to(device)
-            target_box = target_box.clamp(0, 1)
-            
-            # Convert target from xyxy to cxcywh for L1 loss
-            target_cxcywh = torch.stack([
-                (target_box[:, 0] + target_box[:, 2]) / 2,  # cx
-                (target_box[:, 1] + target_box[:, 3]) / 2,  # cy
-                (target_box[:, 2] - target_box[:, 0]).clamp(min=0),  # w
-                (target_box[:, 3] - target_box[:, 1]).clamp(min=0),  # h
-            ], dim=-1)
-            
-            # L1 loss in cxcywh space
-            loss_l1 = torch.nn.functional.l1_loss(pred_box, target_cxcywh)
-            loss_bbox_total += loss_l1
-            
-            # Convert pred from cxcywh to xyxy for GIoU loss
-            pred_xyxy = torch.stack([
-                pred_box[:, 0] - pred_box[:, 2] / 2,  # x1
-                pred_box[:, 1] - pred_box[:, 3] / 2,  # y1
-                pred_box[:, 0] + pred_box[:, 2] / 2,  # x2
-                pred_box[:, 1] + pred_box[:, 3] / 2,  # y2
-            ], dim=-1).clamp(0, 1)
-            
-            # GIoU loss
-            loss_giou = compute_giou_loss(pred_xyxy, target_box)
-            loss_giou_total += loss_giou
-            
-            num_boxes += n_targets
+        # Bbox losses (only for matched queries)
+        matched_pred = pred_box[query_idx]  # [n_matched, 4] cxcywh
+        matched_tgt = tgt_cxcywh[tgt_idx]   # [n_matched, 4] cxcywh
+        
+        # L1 loss
+        loss_l1 = torch.nn.functional.l1_loss(matched_pred, matched_tgt)
+        loss_bbox_total = loss_bbox_total + loss_l1
+        
+        # GIoU loss
+        matched_pred_xyxy = _cxcywh_to_xyxy(matched_pred).clamp(0, 1)
+        matched_tgt_xyxy = tgt_boxes_norm[tgt_idx]
+        loss_giou = compute_giou_loss(matched_pred_xyxy, matched_tgt_xyxy)
+        loss_giou_total = loss_giou_total + loss_giou
+        
+        num_boxes += len(query_idx)
     
     # Average losses
     loss_cls = loss_cls_total / max(B, 1)
@@ -263,6 +281,65 @@ def detection_loss(class_logits, bbox_pred, targets, device='cpu',
     }
     
     return total_loss, loss_dict
+
+
+def _cxcywh_to_xyxy(boxes):
+    """Convert boxes from (cx, cy, w, h) to (x1, y1, x2, y2)"""
+    cx, cy, w, h = boxes.unbind(-1)
+    return torch.stack([cx - w/2, cy - h/2, cx + w/2, cy + h/2], dim=-1)
+
+
+def _compute_pairwise_giou(boxes1, boxes2, eps=1e-7):
+    """Compute pairwise GIoU between boxes1 [N, 4] and boxes2 [M, 4] in xyxy format"""
+    x1 = torch.max(boxes1[:, None, 0], boxes2[None, :, 0])
+    y1 = torch.max(boxes1[:, None, 1], boxes2[None, :, 1])
+    x2 = torch.min(boxes1[:, None, 2], boxes2[None, :, 2])
+    y2 = torch.min(boxes1[:, None, 3], boxes2[None, :, 3])
+    inter = (x2 - x1).clamp(min=0) * (y2 - y1).clamp(min=0)
+    
+    area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
+    area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+    union = area1[:, None] + area2[None, :] - inter
+    iou = inter / (union + eps)
+    
+    gx1 = torch.min(boxes1[:, None, 0], boxes2[None, :, 0])
+    gy1 = torch.min(boxes1[:, None, 1], boxes2[None, :, 1])
+    gx2 = torch.max(boxes1[:, None, 2], boxes2[None, :, 2])
+    gy2 = torch.max(boxes1[:, None, 3], boxes2[None, :, 3])
+    g_area = (gx2 - gx1) * (gy2 - gy1)
+    
+    giou = iou - (g_area - union) / (g_area + eps)
+    return giou
+
+
+def _greedy_match(cost_matrix):
+    """Greedy matching: for each target, pick the best unmatched query"""
+    num_queries, n_targets = cost_matrix.shape
+    n_match = min(num_queries, n_targets)
+    
+    query_indices = []
+    tgt_indices = []
+    used_queries = set()
+    
+    for _ in range(n_match):
+        # Mask used queries
+        mask = cost_matrix.clone()
+        for q in used_queries:
+            mask[q, :] = float('inf')
+        for t in tgt_indices:
+            mask[:, t] = float('inf')
+        
+        # Find min cost
+        flat_idx = mask.argmin()
+        q_idx = (flat_idx // n_targets).item()
+        t_idx = (flat_idx % n_targets).item()
+        
+        query_indices.append(q_idx)
+        tgt_indices.append(t_idx)
+        used_queries.add(q_idx)
+    
+    return torch.tensor(query_indices, dtype=torch.long, device=cost_matrix.device), \
+           torch.tensor(tgt_indices, dtype=torch.long, device=cost_matrix.device)
 
 
 def compute_giou_loss(pred_boxes, target_boxes, eps=1e-7):
